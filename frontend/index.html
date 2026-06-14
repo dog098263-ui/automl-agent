@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoML Agent — Local AI Data &amp; ML Pipeline</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-mark">🤖</div>
+    AutoML<em>Agent</em>
+  </div>
+
+  <div class="project-selector-wrap">
+    <label class="section-lbl">Active Project</label>
+    <select id="projectSelect" class="df-select" style="width:100%; margin-bottom: 10px;" onchange="changeProject()">
+      <option value="">-- Create/Select Project --</option>
+    </select>
+    <div style="display:flex; gap:6px;">
+      <button class="btn btn-ghost btn-sm" style="flex:1; justify-content: center;" onclick="showNewProjectModal()">⊕ New</button>
+      <button class="btn btn-danger btn-sm" style="flex:1; justify-content: center;" id="btnDeleteProject" onclick="confirmDeleteProject()" disabled>🗑 Delete</button>
+    </div>
+  </div>
+
+  <div class="nav-group" style="margin-top: 15px;">
+    <button class="nav-item active" id="nav-dashboard" onclick="go('dashboard')">
+      <span class="nav-icon">▣</span> Dashboard
+    </button>
+    <button class="nav-item" id="nav-ingest" onclick="go('ingest')">
+      <span class="nav-icon">↑</span> 1. Ingest Data
+    </button>
+    <button class="nav-item" id="nav-clean" onclick="go('clean')">
+      <span class="nav-icon">✦</span> 2. Auto Clean
+    </button>
+    <button class="nav-item" id="nav-train" onclick="go('train')">
+      <span class="nav-icon">◎</span> 3. Train Model
+    </button>
+    <button class="nav-item" id="nav-predict" onclick="go('predict')">
+      <span class="nav-icon">↓</span> 4. Predict &amp; Explain
+    </button>
+  </div>
+
+  <div class="sidebar-gap"></div>
+  <div class="sidebar-foot">
+    <span class="api-dot" id="ollama-dot"></span>
+    <span id="ollama-status">Ollama: Checking...</span><br>
+    AutoML Agent v1.0 · Local AI Demo
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div class="topbar-left">
+      <h1 id="pg-title">Dashboard Overview</h1>
+      <p id="pg-sub">Select or create a project to get started.</p>
+    </div>
+    <div class="topbar-right">
+      <!-- User settings dropdown replacing solitary badge -->
+      <div class="user-menu" id="userMenuWrap">
+        <button class="user-avatar-btn" id="userMenuBtn" onclick="toggleUserMenu()">
+          <span class="user-avatar-icon">👤</span>
+          <span class="user-avatar-name" id="activeProjectBadge">No Project</span>
+          <span class="user-avatar-caret">▾</span>
+        </button>
+        <div class="user-dropdown" id="userDropdown">
+          <div class="user-dropdown-header">
+            <span class="user-dropdown-proj" id="dropdownProjectName">No active project</span>
+          </div>
+          <button class="user-dropdown-item" onclick="showNewProjectModal(); toggleUserMenu();">⊕ New Project</button>
+          <button class="user-dropdown-item danger" onclick="confirmDeleteProject(); toggleUserMenu();" id="dropdownDeleteBtn" disabled>🗑 Delete Project</button>
+          <div class="user-dropdown-sep"></div>
+          <button class="user-dropdown-item" onclick="checkOllama(); toast('Ollama status refreshed'); toggleUserMenu();">↺ Refresh Ollama</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- DASHBOARD PAGE -->
+    <div class="page active" id="page-dashboard">
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-label">Total Rows</div>
+          <div class="stat-value" id="d-rows">—</div>
+          <div class="stat-sub" id="d-rows-sub">no dataset loaded</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Columns</div>
+          <div class="stat-value" id="d-cols">—</div>
+          <div class="stat-sub" id="d-cols-sub">no dataset loaded</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Null Cells</div>
+          <div class="stat-value" id="d-nulls">—</div>
+          <div class="stat-sub" id="d-nulls-sub">uncleaned state</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Duplicates</div>
+          <div class="stat-value" id="d-dups">—</div>
+          <div class="stat-sub" id="d-dups-sub">uncleaned state</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Project Status &amp; Pipeline State</div>
+        </div>
+        <div class="panel-body">
+          <div class="pipeline-progress">
+            <div class="progress-step completed clickable" id="step-prog-1" onclick="go('ingest')" title="Go to Ingest Data">
+              <div class="step-num">1</div>
+              <div class="step-lbl">Ingestion</div>
+            </div>
+            <div class="progress-connector" id="step-conn-1"></div>
+            <div class="progress-step clickable" id="step-prog-2" onclick="go('clean')" title="Go to Auto Clean">
+              <div class="step-num">2</div>
+              <div class="step-lbl">Auto Clean</div>
+            </div>
+            <div class="progress-connector" id="step-conn-2"></div>
+            <div class="progress-step clickable" id="step-prog-3" onclick="go('train')" title="Go to Train Model">
+              <div class="step-num">3</div>
+              <div class="step-lbl">ML Train</div>
+            </div>
+            <div class="progress-connector" id="step-conn-3"></div>
+            <div class="progress-step clickable" id="step-prog-4" onclick="go('predict')" title="Go to Predict &amp; Explain">
+              <div class="step-num">4</div>
+              <div class="step-lbl">Predict &amp; Explain</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Data Preview</div>
+          <span class="badge badge-blue" id="d-preview-badge">No data loaded</span>
+        </div>
+        <div class="panel-body" id="d-preview-container">
+          <div class="empty">
+            <div class="ico">📂</div>
+            <p>No dataset loaded yet.</p>
+            <button class="btn btn-primary" style="margin-top:16px;" onclick="go('ingest')">↑ Upload CSV / Start Scraping</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- INGEST PAGE -->
+    <div class="page" id="page-ingest">
+      <div class="ingest-grid">
+        <!-- Local Upload -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">1. Upload File</div>
+          </div>
+          <div class="panel-body">
+            <div class="upload-zone" id="dropZone">
+              <div class="upload-icon">📂</div>
+              <div class="upload-title">Drop your dataset file here, or click to browse</div>
+              <div class="upload-sub">Supports CSV · TSV · XLSX · XLS · JSON</div>
+              <input type="file" id="fileInput" accept=".csv,.tsv,.xlsx,.xls,.json" style="display:none">
+            </div>
+          </div>
+        </div>
+
+        <!-- Scraper -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">2. Web Scraper (Playwright/BS4)</div>
+          </div>
+          <div class="panel-body">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:12px;font-family:'DM Mono',monospace;">
+              Extract tables and text autonomously from any public URL.
+            </p>
+            <div class="row-flex" style="flex-direction:column; align-items:stretch; gap:10px;">
+              <input type="text" id="scraperUrl" class="df-input" placeholder="https://example.com/data-table">
+              <button class="btn btn-primary" style="justify-content:center;" onclick="runScraper()">⚡ Scrape &amp; Ingest URL</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- MySQL Load -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">3. Load from MySQL (Tomcat)</div>
+          </div>
+          <div class="panel-body">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:12px;font-family:'DM Mono',monospace;">
+              Sync with Tomcat's MySQL database. Enter a table name.
+            </p>
+            <div class="row-flex" style="gap:10px;">
+              <input type="text" id="dbTableName" class="df-input" placeholder="e.g. students_raw" style="flex:1;">
+              <button class="btn btn-ghost" onclick="loadFromMySQL()">🔌 Load Table</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top: 15px;">
+        <div class="panel-header">
+          <div class="panel-title">Ingested Raw Data Preview (First 10 rows)</div>
+        </div>
+        <div class="panel-body" id="ingest-preview-container">
+          <div class="empty">
+            <div class="ico">📂</div>
+            <p>No dataset has been loaded for the active project yet.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AUTO CLEAN PAGE -->
+    <div class="page" id="page-clean">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">AI Data Optimizer (Local Ollama)</div>
+        </div>
+        <div class="panel-body">
+          <div id="clean-status-area">
+            <div class="empty">
+              <p>Run the AI agent to analyze your dataset and apply intelligent corrections.</p>
+              <button class="btn btn-primary" style="margin-top:14px;" onclick="runAutoClean()">✦ Optimize and Clean Data</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:15px;">
+        <div class="panel-header">
+          <div class="panel-title">Cleaned Data Preview</div>
+          <button class="btn btn-ghost btn-sm" onclick="downloadFile('cleaned')">📄 Download Cleaned CSV</button>
+        </div>
+        <div class="panel-body" id="clean-preview-container">
+          <div class="empty"><p>Cleaned data will appear here after running the optimizer.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODEL TRAIN PAGE -->
+    <div class="page" id="page-train">
+      <div class="stats-row" id="train-stats-row" style="display:none;">
+        <div class="stat-card">
+          <div class="stat-label">Model Type</div>
+          <div class="stat-value" id="t-type" style="font-size:16px;text-transform:capitalize;">—</div>
+          <div class="stat-sub">detected task</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Algorithm</div>
+          <div class="stat-value" id="t-algo" style="font-size:16px;">—</div>
+          <div class="stat-sub">best trained algorithm</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label" id="t-metric-lbl">Accuracy / R2</div>
+          <div class="stat-value" id="t-score" style="color:var(--green)">—</div>
+          <div class="stat-sub">evaluation score</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Model Status</div>
+          <div class="stat-value" id="t-status" style="font-size:16px;color:var(--green)">Ready</div>
+          <div class="stat-sub">on disk</div>
+        </div>
+      </div>
+
+      <div class="train-config-grid">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">AutoML Configuration</div>
+          </div>
+          <div class="panel-body">
+            <div class="row-flex" style="flex-direction:column; align-items:stretch; gap:12px;">
+              <div class="target-select-box" id="inferredTargetBox" style="display:none; margin-bottom: 10px;">
+                <label class="section-lbl" style="margin-bottom:6px; display:block;">Target Column to Predict</label>
+                <select id="targetColumnSelect" class="df-select" style="width: 100%;" onchange="refreshTrainView()"></select>
+                <p style="font-size:11px;color:var(--muted);margin-top:6px;font-family:'DM Mono',monospace;">Choose the column you want the model to learn to predict.</p>
+              </div>
+              <p style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;">
+                AutoML Agent will autonomously split data, perform scaling/imputation, scan algorithms (Random Forest, XGBoost), train models, and test validation performance.
+              </p>
+              <button class="btn btn-primary" style="justify-content:center;" id="btnTrainModel" onclick="runModelTraining()">◎ Start AutoML Training</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">Feature Importance (Top decision factors)</div>
+          </div>
+          <div class="panel-body" id="feature-importance-container">
+            <div class="empty"><p>Run training to display feature importances.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PREDICT & EXPLAIN PAGE -->
+    <div class="page" id="page-predict">
+      <div class="explain-grid">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">AI Explainer (Plain English Decisions)</div>
+            <button class="btn btn-ghost btn-sm" onclick="downloadFile('explanation')">📥 Save Explanation</button>
+          </div>
+          <div class="panel-body">
+            <div class="explanation-box" id="explanationText">
+              <div class="empty"><p>Training explanation will appear here.</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">Run Inference</div>
+          </div>
+          <div class="panel-body">
+            <div class="target-predict-box" id="predictTargetBox" style="margin-bottom: 15px; display:none;">
+              <label class="section-lbl" style="margin-bottom:6px; display:block;">Active Prediction Target</label>
+              <select id="predictTargetSelect" class="df-select" style="width: 100%;" onchange="changePredictTarget()"></select>
+              <p style="font-size:11px;color:var(--muted);margin-top:6px;font-family:'DM Mono',monospace;">Choose which trained model target you want to see explanations and structured form fields for.</p>
+            </div>
+
+            <form id="predictionForm" onsubmit="runPrediction(event)">
+              <!-- Unified Side-by-Side Inference Panel -->
+              <div class="unified-inference-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:20px; margin-bottom:15px;">
+                <!-- Left: Natural Language Ingestion -->
+                <div id="predictNLBlock">
+                  <label class="section-lbl" style="margin-bottom:8px; display:block;">📝 Describe data in Natural Language</label>
+                  <textarea
+                    id="promptInput"
+                    class="prompt-textarea"
+                    placeholder="e.g. age is 34, city is Boston, income is 55000"
+                    rows="6"
+                    style="width: 100%; font-size: 13px;"
+                  ></textarea>
+                  <p style="font-size:11px;color:var(--muted);margin-top:6px;font-family:'DM Mono',monospace;">
+                    Type naturally. Changes sync to the right in real-time, and target records will auto-match.
+                  </p>
+                </div>
+
+                <!-- Right: Structured Input Form -->
+                <div id="predictFormBlock">
+                  <label class="section-lbl" style="margin-bottom:8px; display:block;">📋 Structured Feature Inputs</label>
+                  <div id="dynamicFormFields" style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; max-height:160px; overflow-y:auto; padding-right:5px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.15);">
+                    <!-- dynamically generated inputs go here -->
+                  </div>
+                  <p style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;">
+                    Fine-tune specific features. Changes compile back to Natural Language.
+                  </p>
+                </div>
+              </div>
+
+              <button type="submit" class="btn btn-primary" id="btnPredict" style="width:100%; justify-content:center;" disabled>⚡ Generate Prediction</button>
+            </form>
+            
+            <div id="predictionResultCard" class="prediction-result-card" style="display:none; margin-top: 15px;">
+              <h4 style="margin-bottom: 10px;">Prediction Results (All Targets):</h4>
+              <div id="predictionsListContainer" style="margin-bottom: 15px;"></div>
+              
+              <div id="matchedRowContainer" style="display:none; margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+                <h4 style="margin-bottom: 8px;">Matching Dataset Records &amp; Predictions:</h4>
+                <div class="tbl-wrap">
+                  <table id="matchedRowsTable">
+                    <thead>
+                      <tr id="matchedRowsHeaderRow"></tr>
+                    </thead>
+                    <tbody id="matchedRowsBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:15px;">
+        <div class="panel-header">
+          <div class="panel-title">Export Predictions &amp; Save to MySQL</div>
+        </div>
+        <div class="panel-body">
+          <div class="row-flex" style="gap:15px; align-items:flex-end;">
+            <div style="flex:1;">
+              <label class="section-lbl">MySQL Export Target Table</label>
+              <input type="text" id="mysqlSaveTable" class="df-input" placeholder="e.g. cleaned_predictions" style="width:100%; margin-top:5px;">
+            </div>
+            <button class="btn btn-primary" onclick="saveToMySQL()">⚡ Save Cleaned Data to MySQL</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+
+<!-- NEW PROJECT MODAL -->
+<div class="modal-backdrop" id="newProjectModal" style="display:none;">
+  <div class="modal-content">
+    <h3>Create New AutoML Project</h3>
+    <div style="margin: 15px 0;">
+      <label class="section-lbl">Project Name</label>
+      <input type="text" id="newProjectName" class="df-input" placeholder="e.g. Student Attrition Model" style="width:100%; margin-top:5px;">
+    </div>
+    <div class="row-flex" style="justify-content: flex-end; gap:8px;">
+      <button class="btn btn-ghost" onclick="hideNewProjectModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="createNewProject()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- DELETE PROJECT CONFIRM MODAL -->
+<div class="modal-backdrop" id="deleteProjectModal" style="display:none;">
+  <div class="modal-content">
+    <h3 style="color:var(--red);">🗑 Delete Project</h3>
+    <p style="margin:14px 0; font-size:13px; font-family:'DM Mono',monospace; color:var(--muted); line-height:1.6;">
+      Are you sure you want to permanently delete <strong id="deleteProjectNameDisplay"></strong>?<br>
+      This will remove all uploaded data, cleaned files, and trained models.
+    </p>
+    <div class="row-flex" style="justify-content: flex-end; gap:8px;">
+      <button class="btn btn-ghost" onclick="hideDeleteProjectModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="deleteProject()">Delete Permanently</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-box" id="toasts"></div>
+
+<script src="script.js"></script>
+</body>
+</html>

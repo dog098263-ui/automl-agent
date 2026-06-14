@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="https://jakarta.ee/jakartaee"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="https://jakarta.ee/jakartaee
+                      https://jakarta.ee/jakartaee/web-app/6.0/web-app 6.0"
+  version="6.0">
+
+    <servlet>
+        <servlet-name>AutoMLServlet</servlet-name>
+        <servlet-class>com.automl.AutoMLServlet</servlet-class>
+    </servlet>
+    
+    <servlet-mapping>
+        <servlet-name>AutoMLServlet</servlet-name>
+        <url-pattern>/api/*</url-pattern>
+    </servlet-mapping>
+
+</web-app>

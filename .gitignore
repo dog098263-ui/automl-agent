@@ -1,0 +1,41 @@
+# Python environment & cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Local databases & storage
+*.db
+*.db-journal
+*.sqlite
+data/
+backend/data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Java build artifacts
+*.class
+servlet/bin/
+servlet/out/
+target/
+build/
+.metadata/
+*.war
