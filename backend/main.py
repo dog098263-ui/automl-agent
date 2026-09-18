@@ -712,7 +712,20 @@ def predict_endpoint(project_id: int, req: PredictRequest):
         
     first_key = list(predictions_output.keys())[0]
     
-    return {
+    def convert_numpy(obj):
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_numpy(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy(i) for i in obj]
+        return obj
+
+    raw_response = {
         "prediction": predictions_output[first_key]["prediction"],
         "raw_prediction": predictions_output[first_key].get("raw_prediction"),
         "parsed_features": predictions_output[first_key].get("parsed_features"),
@@ -720,6 +733,8 @@ def predict_endpoint(project_id: int, req: PredictRequest):
         "matched_row": matched_row,
         "matched_rows": matched_rows_output
     }
+    
+    return convert_numpy(raw_response)
 
 def _parse_prompt_to_features(prompt_text: str) -> dict:
     """Parse natural language like 'age is 34, city is Boston' into feature dict."""
