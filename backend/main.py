@@ -223,16 +223,21 @@ async def upload_dataset(project_id: int, file: UploadFile = File(...)):
     try:
         if ext == ".csv":
             os.replace(dest_path, raw_csv_path)
+            try:
+                df = pd.read_csv(raw_csv_path)
+            except UnicodeDecodeError:
+                df = pd.read_csv(raw_csv_path, encoding='cp1252')
+                df.to_csv(raw_csv_path, index=False)
         elif ext == ".tsv":
             df = pd.read_csv(dest_path, sep="\t"); df.to_csv(raw_csv_path, index=False)
         elif ext in [".xlsx", ".xls"]:
             df = pd.read_excel(dest_path); df.to_csv(raw_csv_path, index=False)
         elif ext == ".json":
             df = pd.read_json(dest_path); df.to_csv(raw_csv_path, index=False)
+        else:
+            df = pd.read_csv(raw_csv_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Parsing file failed: {str(e)}")
-
-    df = pd.read_csv(raw_csv_path)
+        raise HTTPException(status_code=400, detail=f"Parsing file failed (check format/encoding): {str(e)}")
 
     conn = get_db_connection()
     try:

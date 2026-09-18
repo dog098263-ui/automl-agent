@@ -464,8 +464,10 @@ async function uploadFile(file) {
             method: 'POST',
             body: formData
         });
-        if (!r.ok) throw new Error('Upload failed');
         const res = await r.json();
+        if (!r.ok) {
+            throw new Error(res.detail || 'Upload failed');
+        }
         
         // Update state without navigating away
         activeProjectData.preview_cache = res.preview;
