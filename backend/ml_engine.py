@@ -114,8 +114,8 @@ def preprocess_and_split(df: pd.DataFrame, target_col: str, task_type: str):
     X = df_clean.drop(columns=cols_to_drop)
     y = df_clean[target_col]
     
-    # Label encode y for classification if object
-    if task_type == "classification" and y.dtype == "object":
+    # Always label encode y for classification to satisfy XGBoost's strict 0..N-1 requirement
+    if task_type == "classification":
         from sklearn.preprocessing import LabelEncoder
         le = LabelEncoder()
         y = le.fit_transform(y)
@@ -235,7 +235,7 @@ async def train_best_model(df: pd.DataFrame, target_col: str, project_dir: str) 
     
     if task_type == "classification":
         # Candidate 1: Random Forest
-        rf = RandomForestClassifier(random_state=42, n_estimators=100)
+        rf = RandomForestClassifier(random_state=42, n_estimators=30)
         rf.fit(X_train_trans, y_train)
         rf_preds = rf.predict(X_test_trans)
         rf_acc = accuracy_score(y_test, rf_preds)
@@ -245,7 +245,7 @@ async def train_best_model(df: pd.DataFrame, target_col: str, project_dir: str) 
         xgb_acc = -1.0
         if XGBOOST_AVAILABLE:
             try:
-                xgb = XGBClassifier(random_state=42, n_estimators=100, eval_metric="logloss")
+                xgb = XGBClassifier(random_state=42, n_estimators=30, eval_metric="logloss")
                 xgb.fit(X_train_trans, y_train)
                 xgb_preds = xgb.predict(X_test_trans)
                 xgb_acc = accuracy_score(y_test, xgb_preds)
@@ -255,7 +255,7 @@ async def train_best_model(df: pd.DataFrame, target_col: str, project_dir: str) 
         
         if not xgb_trained:
             from sklearn.ensemble import GradientBoostingClassifier
-            xgb = GradientBoostingClassifier(random_state=42, n_estimators=100)
+            xgb = GradientBoostingClassifier(random_state=42, n_estimators=30)
             xgb.fit(X_train_trans, y_train)
             xgb_preds = xgb.predict(X_test_trans)
             xgb_acc = accuracy_score(y_test, xgb_preds)
@@ -276,7 +276,7 @@ async def train_best_model(df: pd.DataFrame, target_col: str, project_dir: str) 
         
     else: # regression or forecasting
         # Candidate 1: Random Forest
-        rf = RandomForestRegressor(random_state=42, n_estimators=100)
+        rf = RandomForestRegressor(random_state=42, n_estimators=30)
         rf.fit(X_train_trans, y_train)
         rf_preds = rf.predict(X_test_trans)
         rf_r2 = r2_score(y_test, rf_preds)
@@ -286,7 +286,7 @@ async def train_best_model(df: pd.DataFrame, target_col: str, project_dir: str) 
         xgb_r2 = -1.0
         if XGBOOST_AVAILABLE:
             try:
-                xgb = XGBRegressor(random_state=42, n_estimators=100)
+                xgb = XGBRegressor(random_state=42, n_estimators=30)
                 xgb.fit(X_train_trans, y_train)
                 xgb_preds = xgb.predict(X_test_trans)
                 xgb_r2 = r2_score(y_test, xgb_preds)
@@ -296,7 +296,7 @@ async def train_best_model(df: pd.DataFrame, target_col: str, project_dir: str) 
                 
         if not xgb_trained:
             from sklearn.ensemble import GradientBoostingRegressor
-            xgb = GradientBoostingRegressor(random_state=42, n_estimators=100)
+            xgb = GradientBoostingRegressor(random_state=42, n_estimators=30)
             xgb.fit(X_train_trans, y_train)
             xgb_preds = xgb.predict(X_test_trans)
             xgb_r2 = r2_score(y_test, xgb_preds)
