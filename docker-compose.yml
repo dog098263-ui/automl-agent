@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  # ── FastAPI App ─────────────────────────────────────────────────────────────
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - OLLAMA_URL=http://ollama:11434
+      - DATA_DIR=/app/backend/data/users/user_1
+    volumes:
+      # Persist uploaded data and trained models across restarts
+      - automl_data:/app/backend/data
+      # Persist SQLite DB
+      - automl_db:/app/backend
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Ollama (Local LLM) ──────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    # Uncomment below to enable GPU support (requires nvidia-docker)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  automl_data:
+  automl_db:
+  ollama_models:

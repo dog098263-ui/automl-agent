@@ -4,28 +4,59 @@ import pandas as pd
 import numpy as np
 import httpx
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+# Read from env — empty string disables Ollama and forces rule-based fallback
+OLLAMA_BASE = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_URL = f"{OLLAMA_BASE}/api/generate" if OLLAMA_BASE else ""
 
 async def get_available_ollama_model() -> str:
-    """Probes the local Ollama instance and returns the best available model, defaulting to llama3."""
+    """Probes the local Ollama instance and returns the best available model.
+    
+    Priority order: local models first, cloud/deprecated models excluded.
+    """
+    # Ordered from most preferred to least preferred — all must be real local models
+    PREFERRED_MODELS = [
+        "llama3.2", "llama3.2:latest",
+        "llama3.1", "llama3.1:latest",
+        "llama3",   "llama3:latest",
+        "gemma3",   "gemma3:latest",
+        "gemma2",   "gemma2:latest",
+        "phi4",     "phi4:latest",
+        "mistral",  "mistral:latest",
+        "qwen2.5",  "qwen2.5:latest",
+    ]
+    # Models known to be retired or cloud-only — never select these
+    BLOCKED_MODELS = {"kimi-k2.5:cloud", "kimi-k2.5"}
+
+    if not OLLAMA_BASE:
+        return ""  # Ollama disabled via env
+
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get("http://localhost:11434/api/tags", timeout=1.5)
+            resp = await client.get(f"{OLLAMA_BASE}/api/tags", timeout=3.0)
             if resp.status_code == 200:
                 data = resp.json()
                 models = data.get("models", [])
                 if models:
-                    names = [m["name"] for m in models]
-                    for name in ["llama3:latest", "llama3", "mistral:latest", "mistral", "llama3.1", "kimi-k2.5:cloud"]:
-                        if name in names:
-                            return name
-                        for n in names:
-                            if name in n:
-                                return n
-                    return models[0]["name"]
+                    installed_names = [m["name"] for m in models]
+                    # Filter out blocked models
+                    usable = [n for n in installed_names if n not in BLOCKED_MODELS]
+                    if not usable:
+                        return ""  # Signal: nothing usable installed
+
+                    # Try exact match against priority list first
+                    for preferred in PREFERRED_MODELS:
+                        if preferred in usable:
+                            return preferred
+                    # Try prefix match (e.g. "llama3.2:8b")
+                    for preferred in PREFERRED_MODELS:
+                        for installed in usable:
+                            if installed.startswith(preferred.split(":")[0]):
+                                return installed
+                    # Fall back to first usable model
+                    return usable[0]
     except Exception:
         pass
-    return "llama3"
+    return ""  # Signal: Ollama unreachable
 
 async def generate_cleaning_strategy(df: pd.DataFrame) -> dict:
     """
@@ -81,31 +112,43 @@ JSON Schema:
 
     model_name = await get_available_ollama_model()
 
-    # 2. Query Ollama (with short timeout)
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                OLLAMA_URL,
-                json={
-                    "model": model_name,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json"
-                },
-                timeout=10.0
-            )
-            if resp.status_code == 200:
-                result_json = resp.json()
-                raw_text = result_json.get("response", "").strip()
-                if raw_text.startswith("```"):
-                    raw_text = raw_text.split("```")[1]
-                    if raw_text.startswith("json"):
-                        raw_text = raw_text[4:]
-                strategy = json.loads(raw_text)
-                strategy["source"] = f"Ollama LLM Agent ({model_name})"
-                return strategy
-    except Exception as e:
-        print(f"Ollama agent request failed: {e}. Falling back to rule-based strategy.")
+    # 2. Query Ollama (generous timeout — local LLMs need time to generate structured JSON)
+    ollama_error = None
+    if model_name:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": model_name,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json"
+                    },
+                    timeout=120.0
+                )
+                if resp.status_code == 200:
+                    result_json = resp.json()
+                    # Surface any model-level errors (e.g. retired model)
+                    if result_json.get("error"):
+                        ollama_error = result_json["error"]
+                    else:
+                        raw_text = result_json.get("response", "").strip()
+                        if raw_text.startswith("```"):
+                            raw_text = raw_text.split("```")[1]
+                            if raw_text.startswith("json"):
+                                raw_text = raw_text[4:]
+                        strategy = json.loads(raw_text)
+                        strategy["source"] = f"Ollama LLM Agent ({model_name})"
+                        return strategy
+                else:
+                    ollama_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        except Exception as e:
+            ollama_error = str(e)
+            print(f"Ollama agent request failed: {e}. Falling back to rule-based strategy.")
+    else:
+        ollama_error = "No usable local Ollama model found. Run: ollama pull llama3.2"
+        print(f"[AutoML] {ollama_error}")
 
     # 3. Rule-based Fallback
     fallback_strategy = {
@@ -115,7 +158,8 @@ JSON Schema:
         "trim_whitespace": True,
         "normalize_case_columns": [],
         "reasoning": "Fallback rule-based strategy applied because Ollama agent was not responding or not running.",
-        "source": "Rule-Based Fallback Engine"
+        "source": "Rule-Based Fallback Engine",
+        "ollama_error": ollama_error  # Surfaces to the frontend when AI did not run
     }
     
     for c in stats:

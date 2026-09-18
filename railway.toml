@@ -1,0 +1,15 @@
+[build]
+builder = "nixpacks"
+buildCommand = "pip install -r backend/requirements.txt && playwright install chromium --with-deps"
+
+[deploy]
+startCommand = "cd backend && python main.py"
+healthcheckPath = "/api/health"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[environments]
+  [environments.production]
+    [environments.production.variables]
+    PORT = "8080"
+    OLLAMA_URL = ""

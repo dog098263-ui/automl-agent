@@ -1,4 +1,4 @@
-# 🤖 AutoML Agent
+# AutoML Agent
 
 **A Fully Local, Zero-Cost AI Agentic AutoML Pipeline**
 

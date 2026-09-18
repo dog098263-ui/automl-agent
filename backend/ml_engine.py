@@ -20,7 +20,8 @@ from sklearn.metrics import accuracy_score, f1_score, mean_squared_error, r2_sco
 
 from typing import Optional
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_BASE = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_URL = f"{OLLAMA_BASE}/api/generate" if OLLAMA_BASE else ""
 
 def detect_task_type(df: pd.DataFrame, target_col: str) -> str:
     """
@@ -398,25 +399,39 @@ Write in a professional, clear, and encouraging tone. Do not limit the explanati
 
     model_name = await get_available_ollama_model()
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                OLLAMA_URL,
-                json={
-                    "model": model_name,
-                    "prompt": prompt,
-                    "stream": False
-                },
-                timeout=15.0
-            )
-            if resp.status_code == 200:
-                result_json = resp.json()
-                return result_json.get("response", "").strip()
-    except Exception as e:
-        print(f"Ollama explanation request failed: {e}")
+    ollama_err = None
+    if model_name:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": model_name,
+                        "prompt": prompt,
+                        "stream": False
+                    },
+                    timeout=180.0
+                )
+                if resp.status_code == 200:
+                    result_json = resp.json()
+                    if result_json.get("error"):
+                        ollama_err = result_json["error"]
+                    else:
+                        return result_json.get("response", "").strip()
+                else:
+                    ollama_err = f"HTTP {resp.status_code}"
+        except Exception as e:
+            ollama_err = str(e)
+            print(f"Ollama explanation request failed: {e}")
+    else:
+        ollama_err = "No usable local model found. Run: ollama pull llama3.2"
+        print(f"[AutoML] {ollama_err}")
 
     # Detailed Fallback explanation matching the new structured prompt
     explanation = f"## 📊 AutoML Model Evaluation Report\n\n"
+    if ollama_err:
+        explanation += f"> ⚠️ **AI Explanation unavailable** — Ollama error: `{ollama_err}`\n> "
+        explanation += f"Install a local model with: `ollama pull llama3.2`\n\n"
     explanation += f"We have successfully trained a **{algorithm}** to perform **{task_type}**.\n\n"
     
     explanation += f"### 1. Model Performance & Confidence\n"

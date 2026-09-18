@@ -1,11 +1,16 @@
 import sqlite3
 import os
 
-DB_PATH = "automl_agent.db"
+# Always use an absolute path so the DB is found regardless of CWD
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(_HERE, "automl_agent.db")
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
+    # WAL mode: readers never block writers, writers never block readers
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
     return conn
 
 def init_db():

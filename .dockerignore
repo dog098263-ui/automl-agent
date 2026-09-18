@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Database (don't ship existing dev data)
+*.db
+*.db-shm
+*.db-wal
+
+# Trained model data (large binary files, generated at runtime)
+backend/data/
+
+# Git
+.git/
+.gitignore
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+
+# Docs / scratch
+README.md
+servlet/

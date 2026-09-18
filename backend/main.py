@@ -12,6 +12,13 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
 
+# Load .env file if present (local dev convenience)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from database import get_db_connection, DB_PATH
 from scraper import scrape_url
 from cleaner import generate_cleaning_strategy, execute_cleaning
@@ -53,9 +60,12 @@ class PredictRequest(BaseModel):
 @app.get("/api/ollama/status")
 async def check_ollama_status():
     import httpx
+    ollama_base = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+    if not ollama_base:
+        return {"status": "disabled", "models": []}
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get("http://localhost:11434/api/tags", timeout=1.5)
+            resp = await client.get(f"{ollama_base}/api/tags", timeout=1.5)
             if resp.status_code == 200:
                 models_info = resp.json()
                 models = [m["name"] for m in models_info.get("models", [])]
@@ -71,104 +81,85 @@ def health():
 @app.get("/api/projects")
 def list_projects():
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM projects ORDER BY created_at DESC")
-    projects = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return projects
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM projects ORDER BY created_at DESC")
+        projects = [dict(row) for row in cursor.fetchall()]
+        return projects
+    finally:
+        conn.close()
 
 @app.post("/api/projects")
 def create_project(proj: ProjectCreate):
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO projects (name, status) VALUES (?, 'created')", (proj.name,))
-    project_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO projects (name, status) VALUES (?, 'created')", (proj.name,))
+        project_id = cursor.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
     # Create user folder
     proj_dir = os.path.join(DATA_DIR, f"project_{project_id}")
     os.makedirs(os.path.join(proj_dir, "raw"), exist_ok=True)
     os.makedirs(os.path.join(proj_dir, "cleaned"), exist_ok=True)
     os.makedirs(os.path.join(proj_dir, "models"), exist_ok=True)
     os.makedirs(os.path.join(proj_dir, "predictions"), exist_ok=True)
-    
+
     return {"id": project_id, "name": proj.name, "status": "created"}
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: int):
     """Delete a project and all its associated data."""
     import shutil
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
-    if not cursor.fetchone():
-        conn.close()
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    # Delete cascade in DB
-    cursor.execute("DELETE FROM audit_log WHERE project_id = ?", (project_id,))
-    cursor.execute("DELETE FROM predictions WHERE project_id = ?", (project_id,))
-    cursor.execute("DELETE FROM models WHERE project_id = ?", (project_id,))
-    cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-    conn.commit()
-    conn.close()
-    
-    # Remove project folder from disk
     proj_dir = os.path.join(DATA_DIR, f"project_{project_id}")
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Project not found")
+        cursor.execute("DELETE FROM audit_log WHERE project_id = ?", (project_id,))
+        cursor.execute("DELETE FROM predictions WHERE project_id = ?", (project_id,))
+        cursor.execute("DELETE FROM models WHERE project_id = ?", (project_id,))
+        cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
     if os.path.exists(proj_dir):
         shutil.rmtree(proj_dir)
-    
     return {"message": f"Project {project_id} deleted successfully"}
 
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: int):
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
-    row = cursor.fetchone()
-    if not row:
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        proj = dict(row)
+        cursor.execute("SELECT * FROM models WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
+        models_list = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT * FROM predictions WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
+        predictions_list = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT * FROM audit_log WHERE project_id = ?", (project_id,))
+        audit_logs = [dict(r) for r in cursor.fetchall()]
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail="Project not found")
-        
-    proj = dict(row)
-    
-    # Get stats if files exist
-    stats = {}
-    if proj["raw_file_path"] and os.path.exists(proj["raw_file_path"]):
-        df_raw = pd.read_csv(proj["raw_file_path"])
-        stats["raw"] = {
-            "rows": len(df_raw),
-            "columns": list(df_raw.columns),
-            "null_cells": int(df_raw.isnull().sum().sum()),
-            "duplicates": int(df_raw.duplicated().sum())
-        }
-    if proj["cleaned_file_path"] and os.path.exists(proj["cleaned_file_path"]):
-        df_clean = pd.read_csv(proj["cleaned_file_path"])
-        stats["cleaned"] = {
-            "rows": len(df_clean),
-            "columns": list(df_clean.columns),
-            "null_cells": int(df_clean.isnull().sum().sum()),
-            "duplicates": int(df_clean.duplicated().sum())
-        }
-        
-    # Get Model details if exists
-    cursor.execute("SELECT * FROM models WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
-    models_rows = cursor.fetchall()
-    models_list = [dict(row) for row in models_rows]
-    
+
+    # Parse feature importance JSON
     for model_info in models_list:
         if model_info.get("feature_importance"):
             model_info["feature_importance"] = json.loads(model_info["feature_importance"])
-        
-        # Load from target-specific model_meta.json if present
         target_name = model_info.get("target_column") or "default"
         proj_dir = os.path.join(DATA_DIR, f"project_{project_id}")
         meta_path = os.path.join(proj_dir, "models", f"model_meta_{target_name}.json")
-        # Fallback to standard model_meta.json
         if not os.path.exists(meta_path):
             meta_path = os.path.join(proj_dir, "models", "model_meta.json")
-            
         if os.path.exists(meta_path):
             try:
                 with open(meta_path, "r") as f:
@@ -177,94 +168,86 @@ def get_project(project_id: int):
                         model_info["target_column"] = meta_data.get("target_column")
                     model_info["num_cols"] = meta_data.get("num_cols")
                     model_info["cat_cols"] = meta_data.get("cat_cols")
-            except:
+            except Exception:
                 pass
-        
-    # Get Explanation details if exists
-    cursor.execute("SELECT * FROM predictions WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
-    pred_rows = cursor.fetchall()
-    predictions_list = [dict(r) for r in pred_rows]
+
+    # Load dataset stats (done after DB is closed)
+    stats = {}
+    if proj.get("raw_file_path") and os.path.exists(proj["raw_file_path"]):
+        df_raw = pd.read_csv(proj["raw_file_path"])
+        stats["raw"] = {"rows": len(df_raw), "columns": list(df_raw.columns),
+                        "null_cells": int(df_raw.isnull().sum().sum()),
+                        "duplicates": int(df_raw.duplicated().sum())}
+    if proj.get("cleaned_file_path") and os.path.exists(proj["cleaned_file_path"]):
+        df_clean = pd.read_csv(proj["cleaned_file_path"])
+        stats["cleaned"] = {"rows": len(df_clean), "columns": list(df_clean.columns),
+                            "null_cells": int(df_clean.isnull().sum().sum()),
+                            "duplicates": int(df_clean.duplicated().sum())}
+
     pred_info = predictions_list[0] if predictions_list else None
-    
-    # Get Audit Log
-    cursor.execute("SELECT * FROM audit_log WHERE project_id = ?", (project_id,))
-    audit_logs = [dict(r) for r in cursor.fetchall()]
-    
-    conn.close()
     return {
-        "project": proj,
-        "stats": stats,
-        "model": models_list[0] if models_list else None,  # backward compatibility
-        "models": models_list,  # all trained target columns
-        "prediction": pred_info,  # backward compatibility
-        "predictions": predictions_list,  # all trained target predictions
+        "project": proj, "stats": stats,
+        "model": models_list[0] if models_list else None,
+        "models": models_list,
+        "prediction": pred_info,
+        "predictions": predictions_list,
         "audit_logs": audit_logs
     }
 
+
 @app.post("/api/projects/{project_id}/upload")
 async def upload_dataset(project_id: int, file: UploadFile = File(...)):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
-    if not cursor.fetchone():
-        conn.close()
-        raise HTTPException(status_code=404, detail="Project not found")
-        
     proj_dir = os.path.join(DATA_DIR, f"project_{project_id}")
     raw_dir = os.path.join(proj_dir, "raw")
-    
-    # Clean filename and save
+
+    # Validate project exists
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM projects WHERE id = ?", (project_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Project not found")
+    finally:
+        conn.close()
+
     filename = file.filename
-    dest_path = os.path.join(raw_dir, filename)
-    
-    # Ensure it's CSV
     ext = os.path.splitext(filename)[1].lower()
     if ext not in [".csv", ".tsv", ".xlsx", ".xls", ".json"]:
-        conn.close()
         raise HTTPException(status_code=400, detail="Unsupported file format")
-        
+
+    dest_path = os.path.join(raw_dir, filename)
     with open(dest_path, "wb") as buffer:
         buffer.write(await file.read())
-        
-    # Standardize to CSV internally for raw data
+
     raw_csv_path = os.path.join(raw_dir, "dataset.csv")
     try:
         if ext == ".csv":
             os.replace(dest_path, raw_csv_path)
         elif ext == ".tsv":
-            df = pd.read_csv(dest_path, sep="\t")
-            df.to_csv(raw_csv_path, index=False)
+            df = pd.read_csv(dest_path, sep="\t"); df.to_csv(raw_csv_path, index=False)
         elif ext in [".xlsx", ".xls"]:
-            df = pd.read_excel(dest_path)
-            df.to_csv(raw_csv_path, index=False)
+            df = pd.read_excel(dest_path); df.to_csv(raw_csv_path, index=False)
         elif ext == ".json":
-            df = pd.read_json(dest_path)
-            df.to_csv(raw_csv_path, index=False)
+            df = pd.read_json(dest_path); df.to_csv(raw_csv_path, index=False)
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=500, detail=f"Parsing file failed: {str(e)}")
-        
-    # Read stats
+
     df = pd.read_csv(raw_csv_path)
-    
-    cursor.execute("""
-    UPDATE projects 
-    SET original_filename = ?, raw_file_path = ?, status = 'uploaded' 
-    WHERE id = ?
-    """, (filename, raw_csv_path, project_id))
-    
-    conn.commit()
-    conn.close()
-    
-    # Return preview (first 50 rows)
+
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE projects SET original_filename=?, raw_file_path=?, status='uploaded' WHERE id=?",
+            (filename, raw_csv_path, project_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
     preview_data = df.head(50).replace({np.nan: None}).to_dict(orient="records")
-    
-    return {
-        "message": "File uploaded and standardized",
-        "rows": len(df),
-        "columns": list(df.columns),
-        "preview": preview_data
-    }
+    return {"message": "File uploaded and standardized", "rows": len(df),
+            "columns": list(df.columns), "preview": preview_data}
+
 
 @app.post("/api/projects/{project_id}/scrape")
 async def scrape_dataset(project_id: int, req: ScrapeRequest):
@@ -305,122 +288,104 @@ async def scrape_dataset(project_id: int, req: ScrapeRequest):
 
 @app.post("/api/projects/{project_id}/clean")
 async def clean_dataset(project_id: int):
+    # ── Step 1: Read project info from DB then CLOSE connection ──────────────
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
-    proj_row = cursor.fetchone()
-    if not proj_row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Project not found")
-        
-    proj = dict(proj_row)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+        proj_row = cursor.fetchone()
+        if not proj_row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        proj = dict(proj_row)
+    finally:
+        conn.close()  # ← close BEFORE any slow work
+
     if not proj["raw_file_path"] or not os.path.exists(proj["raw_file_path"]):
-        conn.close()
         raise HTTPException(status_code=400, detail="No dataset uploaded yet")
-        
+
     df = pd.read_csv(proj["raw_file_path"])
-    
-    # 1. Generate Ollama/Fallback Strategy
+
+    # ── Step 2: Slow work — Ollama + cleaning (DB is closed during this) ─────
     strategy = await generate_cleaning_strategy(df)
-    
-    # 2. Execute cleaning
     cleaned_df, audit_logs = execute_cleaning(df, strategy)
-    
-    # 3. Save cleaned file
+
+    # ── Step 3: Save results to disk ─────────────────────────────────────────
     proj_dir = os.path.join(DATA_DIR, f"project_{project_id}")
     cleaned_csv_path = os.path.join(proj_dir, "cleaned", "dataset_cleaned.csv")
     cleaned_df.to_csv(cleaned_csv_path, index=False)
-    
-    # 4. Save audit log & metadata in DB
-    cursor.execute("DELETE FROM audit_log WHERE project_id = ?", (project_id,)) # clear previous clean logs
-    for log in audit_logs:
-        cursor.execute("""
-        INSERT INTO audit_log (project_id, column_name, operation, details)
-        VALUES (?, ?, ?, ?)
-        """, (project_id, log["column"], log["operation"], log["details"]))
-        
-    # Write audit log json
     audit_json_path = os.path.join(proj_dir, "cleaned", "audit_log.json")
     with open(audit_json_path, "w") as f:
         json.dump(audit_logs, f, indent=2)
-        
-    cursor.execute("""
-    UPDATE projects 
-    SET cleaned_file_path = ?, status = 'cleaned' 
-    WHERE id = ?
-    """, (cleaned_csv_path, project_id))
-    
-    conn.commit()
-    conn.close()
-    
+
+    # ── Step 4: Fresh short DB write ─────────────────────────────────────────
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM audit_log WHERE project_id = ?", (project_id,))
+        for log in audit_logs:
+            cursor.execute(
+                "INSERT INTO audit_log (project_id, column_name, operation, details) VALUES (?,?,?,?)",
+                (project_id, log["column"], log["operation"], log["details"])
+            )
+        cursor.execute(
+            "UPDATE projects SET cleaned_file_path=?, status='cleaned' WHERE id=?",
+            (cleaned_csv_path, project_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
     preview_data = cleaned_df.head(50).replace({np.nan: None}).to_dict(orient="records")
-    
-    return {
-        "message": "Data cleaned successfully",
-        "strategy": strategy,
-        "audit_logs": audit_logs,
-        "preview": preview_data
-    }
+    return {"message": "Data cleaned successfully", "strategy": strategy,
+            "audit_logs": audit_logs, "preview": preview_data}
+
 
 @app.post("/api/projects/{project_id}/train")
 async def train_model_endpoint(project_id: int, req: TrainRequest):
+    # ── Step 1: Read from DB then CLOSE immediately ───────────────────────────
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
-    proj_row = cursor.fetchone()
-    if not proj_row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Project not found")
-        
-    proj = dict(proj_row)
-    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+        proj_row = cursor.fetchone()
+        if not proj_row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        proj = dict(proj_row)
+    finally:
+        conn.close()  # ← close before any slow work
+
     if not proj["cleaned_file_path"] or not os.path.exists(proj["cleaned_file_path"]):
-        conn.close()
         raise HTTPException(status_code=400, detail="Please clean the dataset first")
-        
+
     df = pd.read_csv(proj["cleaned_file_path"])
-    
-    # Determine target columns to train
+
+    # Determine target columns
     target_column = req.target_column
-    targets_to_train = []
-    
     if target_column in ["*", "all", "__all__"]:
-        # Find all columns that have at least 2 unique values and not all nulls
-        for col in df.columns:
-            if df[col].dropna().nunique() > 1:
-                targets_to_train.append(col)
-        if not targets_to_train:
-            targets_to_train = [df.columns[-1]]
+        targets_to_train = [col for col in df.columns if df[col].dropna().nunique() > 1] or [df.columns[-1]]
     else:
         if not target_column:
-            # Auto-infer: last column of cleaned or raw CSV
             target_column = df.columns[-1]
-            
         if target_column not in df.columns:
-            conn.close()
             raise HTTPException(status_code=400, detail=f"Target column '{target_column}' not found")
         targets_to_train = [target_column]
-        
+
     proj_dir = os.path.join(DATA_DIR, f"project_{project_id}")
     results = {}
     last_res = None
     last_explanation = ""
     trained_count = 0
-    
+
+    # ── Step 2: Slow work — ML training + Ollama (DB is closed during this) ──
     for target in targets_to_train:
         try:
-            # Train Model
             train_res = await train_best_model(df, target, proj_dir)
-            
-            # Generate Plain-English Explanation
             explanation = await generate_explanation(
-                train_res["task_type"],
-                train_res["algorithm"],
-                train_res["metrics"],
-                train_res["feature_importance"]
+                train_res["task_type"], train_res["algorithm"],
+                train_res["metrics"], train_res["feature_importance"]
             )
-            
-            # Rename standard model.pkl to target-specific one
+
+            # Rename model.pkl to target-specific file
             models_dir = os.path.join(proj_dir, "models")
             os.makedirs(models_dir, exist_ok=True)
             std_model_path = os.path.join(models_dir, "model.pkl")
@@ -432,47 +397,19 @@ async def train_model_endpoint(project_id: int, req: TrainRequest):
                     os.rename(std_model_path, target_model_path)
                     train_res["model_path"] = target_model_path
                 except Exception as ex:
-                    print(f"Failed to rename model to target-specific path: {ex}")
-                    
-            # Save Model metadata in SQLite
-            cursor.execute("DELETE FROM models WHERE project_id = ? AND target_column = ?", (project_id, target))
-            primary_metric = list(train_res["metrics"].values())[0]
-            cursor.execute("""
-            INSERT INTO models (project_id, target_column, task_type, algorithm, accuracy, model_path, feature_importance)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                project_id, 
-                target,
-                train_res["task_type"], 
-                train_res["algorithm"], 
-                primary_metric, 
-                train_res["model_path"],
-                json.dumps(train_res["feature_importance"])
-            ))
-            
-            # Save explanation in predictions table
-            cursor.execute("DELETE FROM predictions WHERE project_id = ? AND target_column = ?", (project_id, target))
-            cursor.execute("""
-            INSERT INTO predictions (project_id, target_column, explanation)
-            VALUES (?, ?, ?)
-            """, (project_id, target, explanation))
-            
-            # Save files locally
+                    print(f"Failed to rename model: {ex}")
+
+            # Save explanation + meta to disk
             predictions_dir = os.path.join(proj_dir, "predictions")
             os.makedirs(predictions_dir, exist_ok=True)
-            explanation_txt_path = os.path.join(predictions_dir, f"explanation_{target}.txt")
-            with open(explanation_txt_path, "w") as f:
+            with open(os.path.join(predictions_dir, f"explanation_{target}.txt"), "w") as f:
                 f.write(explanation)
-                
-            model_meta_path = os.path.join(models_dir, f"model_meta_{target}.json")
-            with open(model_meta_path, "w") as f:
+            with open(os.path.join(models_dir, f"model_meta_{target}.json"), "w") as f:
                 json.dump(train_res, f, indent=2)
-                
+
             results[target] = {
-                "task_type": train_res["task_type"],
-                "algorithm": train_res["algorithm"],
-                "metrics": train_res["metrics"],
-                "feature_importance": train_res["feature_importance"],
+                "task_type": train_res["task_type"], "algorithm": train_res["algorithm"],
+                "metrics": train_res["metrics"], "feature_importance": train_res["feature_importance"],
                 "explanation": explanation
             }
             last_res = train_res
@@ -481,17 +418,34 @@ async def train_model_endpoint(project_id: int, req: TrainRequest):
         except Exception as e:
             print(f"Failed to train target '{target}': {e}")
             if len(targets_to_train) == 1:
-                conn.close()
-                raise HTTPException(status_code=500, detail=f"Training failed for target '{target}': {str(e)}")
-                
+                raise HTTPException(status_code=500, detail=f"Training failed for '{target}': {str(e)}")
+
     if trained_count == 0:
-        conn.close()
         raise HTTPException(status_code=500, detail="Failed to train any target columns.")
-        
-    cursor.execute("UPDATE projects SET status = 'trained' WHERE id = ?", (project_id,))
-    conn.commit()
-    conn.close()
-    
+
+    # ── Step 3: Fresh short DB write ─────────────────────────────────────────
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        for target, res_data in results.items():
+            cursor.execute("DELETE FROM models WHERE project_id=? AND target_column=?", (project_id, target))
+            primary_metric = list(res_data["metrics"].values())[0]
+            target_model_path = os.path.join(proj_dir, "models", f"model_{target}.pkl")
+            cursor.execute(
+                "INSERT INTO models (project_id, target_column, task_type, algorithm, accuracy, model_path, feature_importance) VALUES (?,?,?,?,?,?,?)",
+                (project_id, target, res_data["task_type"], res_data["algorithm"],
+                 primary_metric, target_model_path, json.dumps(res_data["feature_importance"]))
+            )
+            cursor.execute("DELETE FROM predictions WHERE project_id=? AND target_column=?", (project_id, target))
+            cursor.execute(
+                "INSERT INTO predictions (project_id, target_column, explanation) VALUES (?,?,?)",
+                (project_id, target, res_data["explanation"])
+            )
+        cursor.execute("UPDATE projects SET status='trained' WHERE id=?", (project_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
     if len(targets_to_train) > 1:
         return {
             "message": f"Successfully trained models for {trained_count} columns: {list(results.keys())}",
@@ -500,20 +454,14 @@ async def train_model_endpoint(project_id: int, req: TrainRequest):
             "algorithm": last_res["algorithm"] if last_res else "Various",
             "metrics": last_res["metrics"] if last_res else {},
             "feature_importance": last_res["feature_importance"] if last_res else {},
-            "explanation": last_explanation if last_explanation else "Multi-target models trained.",
-            "results": results
+            "explanation": last_explanation or "Multi-target models trained.", "results": results
         }
     else:
         target = targets_to_train[0]
         res = results[target]
-        return {
-            "message": "Model trained successfully",
-            "task_type": res["task_type"],
-            "algorithm": res["algorithm"],
-            "metrics": res["metrics"],
-            "feature_importance": res["feature_importance"],
-            "explanation": res["explanation"]
-        }
+        return {"message": "Model trained successfully", "task_type": res["task_type"],
+                "algorithm": res["algorithm"], "metrics": res["metrics"],
+                "feature_importance": res["feature_importance"], "explanation": res["explanation"]}
 
 @app.post("/api/projects/{project_id}/predict")
 def predict_endpoint(project_id: int, req: PredictRequest):
@@ -852,4 +800,7 @@ else:
         return HTMLResponse("<h1>AutoML Agent API</h1><p>Frontend directory not found. API is running at /api/</p>")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    # Disable reload in production (cloud sets PORT externally)
+    is_dev = os.environ.get("PORT") is None
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=is_dev)
