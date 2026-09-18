@@ -1,23 +1,14 @@
-# Render.com deployment config
-# Docs: https://render.com/docs/blueprint-spec
-
 services:
   - type: web
     name: automl-agent
-    runtime: python
-    region: singapore          # closest to India
+    env: docker
+    region: singapore
     plan: free
-    buildCommand: |
-      pip install -r backend/requirements.txt
-      playwright install chromium --with-deps
-    startCommand: cd backend && python main.py
+    healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
       - key: PORT
-        generateValue: false
-        value: 10000            # Render free tier uses port 10000
+        value: 10000
       - key: OLLAMA_URL
-        value: ""               # Empty = no Ollama on free tier, uses fallback
-      - key: PYTHON_VERSION
-        value: 3.11.0
-    healthCheckPath: /api/health
-    autoDeploy: true            # Redeploy on every git push
+        value: ""
+
