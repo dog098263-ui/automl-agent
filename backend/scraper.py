@@ -4,6 +4,7 @@ import csv
 import pandas as pd
 from bs4 import BeautifulSoup
 import asyncio
+from typing import Optional
 
 def _extract_best_table(tables) -> Optional[pd.DataFrame]:
     import pandas as pd
